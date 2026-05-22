@@ -24,7 +24,7 @@ export const PasswordModal: React.FC<PasswordModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!password) return;
+    if (!password || loading) return;
     onSubmit(password);
     setPassword("");
   };
@@ -37,15 +37,16 @@ export const PasswordModal: React.FC<PasswordModalProps> = ({
   return (
     <Modal open={open} onClose={handleCancel} title={title}>
       {description && (
-        <p className="text-sm text-muted mb-4">{description}</p>
+        <p className="text-sm text-slate mb-5 leading-relaxed">{description}</p>
       )}
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <Input
           type="password"
-          placeholder="请输入钱包密码"
+          placeholder="钱包密码"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           autoFocus
+          disabled={loading}
         />
         <div className="flex gap-3">
           <Button
@@ -59,6 +60,7 @@ export const PasswordModal: React.FC<PasswordModalProps> = ({
           </Button>
           <Button
             type="submit"
+            variant="primary"
             fullWidth
             loading={loading}
             disabled={!password}
