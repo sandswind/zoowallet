@@ -1,0 +1,70 @@
+[package]
+name = "zoowallet"
+version = "0.1.0"
+description = "ZooWallet - Cross-chain desktop wallet"
+authors = ["ZooWallet"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "zoowallet_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "zoowallet"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+env_logger = "0.11"
+
+# Crypto
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["hmac"] }
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+base64 = "0.22"
+
+# BIP39 + HD Wallet
+bip39 = "2"
+coins-bip32 = "0.13"
+coins-bip39 = "0.13"
+
+# ETH (alloy)
+alloy = { version = "0.15", features = [
+    "full",
+    "signer-local",
+    "provider-http",
+    "rpc-types",
+    "consensus",
+    "network",
+    "signers",
+] }
+
+# Utils
+uuid = { version = "1", features = ["v4"] }
+hex = "0.4"
+bs58 = "0.5"
+
+# HTTP
+reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+
+[profile.dev]
+incremental = true
