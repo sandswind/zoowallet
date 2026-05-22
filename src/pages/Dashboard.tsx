@@ -2,20 +2,31 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { zoo } from "../lib/ipc";
 import { useWalletStore } from "../store/walletStore";
 import { useUiStore } from "../store/uiStore";
+import { usePriceStore } from "../store/priceStore";
 import { Button } from "../components/ui/Button";
 import { CopyButton } from "../components/ui/CopyButton";
 
 export const Dashboard: React.FC = () => {
   const {
-    accounts, currentAccount, balance, tokenBalances,
-    isLoadingBalance, isLoadingTokens,
-    setBalance, setTokenBalances, setIsUnlocked, setIsLoadingBalance, setIsLoadingTokens, setCurrentAccount,
+    accounts, currentAccount, balance, prevBalance, tokenBalances,
+    isLoadingBalance, isLoadingTokens, isBalanceHidden,
+    setBalance, setTokenBalances, setIsLoadingBalance, setIsLoadingTokens,
+    setCurrentAccount, lock,
   } = useWalletStore();
   const { navigate, showNotification } = useUiStore();
+  const { prices } = usePriceStore();
 
   const fetchIdRef = useRef(0);
   const ethAddress = currentAccount?.addresses?.ETH;
   const isWatch = currentAccount?.type === "watch";
+  const ethPrice = prices["ETH"];
+
+  // Compute USD value from balance
+  const usdValue = balance && ethPrice
+    ? (parseFloat(balance) * ethPrice.usd).toLocaleString("en-US", {
+        style: "currency", currency: "USD", maximumFractionDigits: 2,
+      })
+    : null;
 
   const fetchData = useCallback(async () => {
     if (!ethAddress) return;
@@ -27,8 +38,11 @@ export const Dashboard: React.FC = () => {
     try {
       const [bal] = await Promise.allSettled([zoo.eth.getBalance(ethAddress)]);
       if (fetchId !== fetchIdRef.current) return;
-      if (bal.status === "fulfilled") setBalance(bal.value);
-      else showNotification("error", "余额加载失败");
+      if (bal.status === "fulfilled") {
+        setBalance(bal.value);
+      } else {
+        showNotification("error", "余额加载失败");
+      }
     } finally {
       setIsLoadingBalance(false);
     }
@@ -42,11 +56,26 @@ export const Dashboard: React.FC = () => {
     }
   }, [ethAddress, setBalance, setTokenBalances, setIsLoadingBalance, setIsLoadingTokens, showNotification]);
 
+  // Refetch when account changes
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleLock = () => { setIsUnlocked(false); navigate("unlock"); };
-  const shortAddr = ethAddress ? `${ethAddress.slice(0, 6)}…${ethAddress.slice(-4)}` : "—";
+  // Notify on balance increase
+  useEffect(() => {
+    if (!balance || !prevBalance) return;
+    const prev = parseFloat(prevBalance);
+    const curr = parseFloat(balance);
+    if (curr > prev) {
+      const diff = (curr - prev).toFixed(6);
+      showNotification("success", `收到 ${diff} ETH`);
+    }
+  }, [balance, prevBalance, showNotification]);
 
+  const handleLock = () => {
+    lock();
+    navigate("unlock");
+  };
+
+  const shortAddr = ethAddress ? `${ethAddress.slice(0, 6)}…${ethAddress.slice(-4)}` : "—";
   const [showAccounts, setShowAccounts] = useState(false);
 
   return (
@@ -66,7 +95,10 @@ export const Dashboard: React.FC = () => {
           </div>
           <span className="text-muted text-xs ml-1">▾</span>
         </button>
-        <button onClick={handleLock} className="text-muted hover:text-white text-lg" title="锁定">🔒</button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => navigate("settings")} className="text-muted hover:text-white text-lg" title="设置">⚙</button>
+          <button onClick={handleLock} className="text-muted hover:text-white text-lg" title="锁定">🔒</button>
+        </div>
       </div>
 
       {/* Account switcher dropdown */}
@@ -97,18 +129,38 @@ export const Dashboard: React.FC = () => {
         {isWatch && <span className="text-xs bg-muted/20 text-muted px-2 py-0.5 rounded mb-1">观察钱包</span>}
         <p className="text-xs text-muted uppercase tracking-wide">ETH 余额</p>
         {isLoadingBalance ? (
-          <div className="h-9 w-40 bg-bg-hover rounded-lg animate-pulse" />
+          <div className="flex flex-col items-center gap-1">
+            <div className="h-9 w-40 bg-bg-hover rounded-lg animate-pulse" />
+            <div className="h-4 w-20 bg-bg-hover rounded animate-pulse" />
+          </div>
         ) : (
-          <p className="text-3xl font-bold">{balance ?? "—"} <span className="text-muted text-lg">ETH</span></p>
+          <>
+            <p className="text-3xl font-bold">
+              {isBalanceHidden ? (
+                <span className="tracking-widest text-muted">● ● ● ●</span>
+              ) : (
+                <>{balance ?? "—"} <span className="text-muted text-lg">ETH</span></>
+              )}
+            </p>
+            {!isBalanceHidden && usdValue && (
+              <p className="text-sm text-muted">{usdValue}</p>
+            )}
+            {ethPrice && (
+              <p className={`text-xs mt-0.5 ${ethPrice.change24h >= 0 ? "text-success" : "text-danger"}`}>
+                {ethPrice.change24h >= 0 ? "↑" : "↓"} {Math.abs(ethPrice.change24h).toFixed(2)}%
+              </p>
+            )}
+          </>
         )}
         <button onClick={fetchData} disabled={isLoadingBalance} className="text-xs text-muted hover:text-white transition-colors mt-1">↻ 刷新</button>
       </div>
 
       {/* Action buttons */}
-      <div className="px-4 mt-3 flex gap-2">
-        <Button fullWidth onClick={() => navigate("send")} disabled={isWatch}>发送</Button>
-        <Button fullWidth variant="secondary" onClick={() => navigate("history")}>历史</Button>
-        <Button fullWidth variant="secondary" onClick={() => navigate("security")}>安全</Button>
+      <div className="px-4 mt-3 grid grid-cols-4 gap-2">
+        <Button fullWidth onClick={() => navigate("send")} disabled={isWatch} size="sm">发送</Button>
+        <Button fullWidth variant="secondary" onClick={() => navigate("receive")} size="sm">收款</Button>
+        <Button fullWidth variant="secondary" onClick={() => navigate("history")} size="sm">历史</Button>
+        <Button fullWidth variant="secondary" onClick={() => navigate("security")} size="sm">安全</Button>
       </div>
 
       {/* Token list */}
@@ -116,10 +168,13 @@ export const Dashboard: React.FC = () => {
         <p className="text-xs text-muted uppercase tracking-wide mb-2">代币</p>
         {isLoadingTokens ? (
           <div className="flex flex-col gap-2">
-            {[1,2,3].map(i => <div key={i} className="h-12 bg-bg-card rounded-xl animate-pulse" />)}
+            {[1, 2, 3].map((i) => <div key={i} className="h-12 bg-bg-card rounded-xl animate-pulse" />)}
           </div>
         ) : tokenBalances.length === 0 ? (
-          <p className="text-xs text-muted text-center py-6">暂无代币</p>
+          <div className="flex flex-col items-center py-8 gap-2">
+            <p className="text-xs text-muted">暂无 ERC-20 代币</p>
+            <p className="text-xs text-muted/60">代币余额将在首次交易后自动显示</p>
+          </div>
         ) : (
           <div className="flex flex-col gap-1.5">
             {tokenBalances.map((t) => (
@@ -128,7 +183,9 @@ export const Dashboard: React.FC = () => {
                   <p className="text-sm font-medium">{t.symbol}</p>
                   <p className="text-xs text-muted">{t.name}</p>
                 </div>
-                <p className="text-sm font-medium">{t.balance}</p>
+                <p className="text-sm font-medium">
+                  {isBalanceHidden ? <span className="text-muted">●●●●</span> : t.balance}
+                </p>
               </div>
             ))}
           </div>

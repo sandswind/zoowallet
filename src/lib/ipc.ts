@@ -25,6 +25,34 @@ export async function safeInvoke<T>(
   }
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface PriceData {
+  usd: number;
+  cny: number;
+  change24h: number;
+}
+
+export interface SendEthArgs extends Record<string, unknown> {
+  account_id: string;
+  password: string;
+  to: string;
+  amount: string;
+  max_fee_gwei: string;
+  priority_fee_gwei: string;
+}
+
+export interface SendTokenArgs extends Record<string, unknown> {
+  account_id: string;
+  password: string;
+  contract_address: string;
+  to: string;
+  amount: string;
+  decimals: number;
+  max_fee_gwei: string;
+  priority_fee_gwei: string;
+}
+
 // ─── zoo namespace ────────────────────────────────────────────────────────────
 
 export const zoo = {
@@ -53,11 +81,11 @@ export const zoo = {
   // ETH
   eth: {
     getBalance: (address: string) => safeInvoke<string>("eth_get_balance", { address }),
-    sendTransaction: (args: Record<string, unknown>) => safeInvoke<HashOut>("eth_send_transaction", args),
+    sendTransaction: (args: SendEthArgs) => safeInvoke<HashOut>("eth_send_transaction", args),
     // Phase 3
     getGasOptions: () => safeInvoke<GasOptions>("eth_get_gas_options"),
     getTokenBalances: (address: string) => safeInvoke<TokenBalance[]>("eth_get_token_balances", { address }),
-    sendToken: (args: Record<string, unknown>) => safeInvoke<HashOut>("eth_send_token", args),
+    sendToken: (args: SendTokenArgs) => safeInvoke<HashOut>("eth_send_token", args),
     decodeCalldata: (data: string) => safeInvoke<import("../types").CalldataDecoded | null>("eth_decode_calldata", { data }),
     previewTransaction: (args: Record<string, unknown>) => safeInvoke<EthTxPreview>("eth_preview_transaction", args),
     queryTokenInfo: (contract_address: string) => safeInvoke<TokenInfo>("eth_query_token_info", { contract_address }),
@@ -71,5 +99,13 @@ export const zoo = {
       safeInvoke<{ hash: string; oldHash: string }>("eth_speed_up_transaction", args),
     cancelTransaction: (args: { account_id: string; password: string; tx_hash: string }) =>
       safeInvoke<{ hash: string; oldHash: string }>("eth_cancel_transaction", args),
+  },
+
+  // Price (Phase 8 — Rust not yet implemented; these will error gracefully)
+  price: {
+    getMultiple: (symbols: string[]) =>
+      safeInvoke<Record<string, PriceData>>("price_get_multiple", { symbols }),
+    getChart: (symbol: string) =>
+      safeInvoke<[number, number][]>("price_get_chart", { symbol }),
   },
 } as const;

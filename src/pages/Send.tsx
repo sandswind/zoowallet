@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { zoo, IpcError } from "../lib/ipc";
+import { zoo, IpcError, type SendEthArgs } from "../lib/ipc";
 import { useWalletStore } from "../store/walletStore";
 import { useUiStore } from "../store/uiStore";
 import { Input } from "../components/ui/Input";
@@ -14,7 +14,7 @@ function isValidEthAddress(addr: string): boolean {
 }
 
 export const Send: React.FC = () => {
-  const { currentAccount, tokenBalances } = useWalletStore();
+  const { currentAccount, tokenBalances, balance } = useWalletStore();
   const { navigate, showNotification, setLastSentHash } = useUiStore();
 
   const [to, setTo] = useState("");
@@ -42,13 +42,22 @@ export const Send: React.FC = () => {
       .finally(() => setLoadingGas(false));
   }, [showNotification]);
 
-  // Preview when address + amount are valid
+  // Preview when address + amount are valid — pass actual amount as Wei
   useEffect(() => {
     if (!isValidEthAddress(to) || !amount || !ethAddress) { setPreview(null); return; }
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) { setPreview(null); return; }
     const timer = setTimeout(async () => {
       setLoadingPreview(true);
       try {
-        const p = await zoo.eth.previewTransaction({ from: ethAddress, to, value: "0", data: "" });
+        // Convert ETH amount to hex Wei for preview
+        const weiValue = BigInt(Math.floor(amountNum * 1e18));
+        const p = await zoo.eth.previewTransaction({
+          from: ethAddress,
+          to,
+          value: `0x${weiValue.toString(16)}`,
+          data: "",
+        });
         setPreview(p);
       } catch { setPreview(null); }
       finally { setLoadingPreview(false); }
@@ -63,11 +72,15 @@ export const Send: React.FC = () => {
     setSending(true);
     try {
       if (selectedToken === "ETH") {
-        const result = await zoo.eth.sendTransaction({
-          account_id: currentAccount.id, password, to, amount,
+        const args: SendEthArgs = {
+          account_id: currentAccount.id,
+          password,
+          to,
+          amount,
           max_fee_gwei: selectedGasOpt?.maxFeeGwei ?? "0",
           priority_fee_gwei: selectedGasOpt?.priorityFeeGwei ?? "0",
-        });
+        };
+        const result = await zoo.eth.sendTransaction(args);
         setLastSentHash(result.hash);
       } else {
         const token = tokenBalances.find(t => t.contractAddress === selectedToken);
@@ -119,6 +132,19 @@ export const Send: React.FC = () => {
         <Input label={`发送金额 (${selectedToken === "ETH" ? "ETH" : tokenBalances.find(t => t.contractAddress === selectedToken)?.symbol ?? ""})`}
           placeholder="0.001" type="number" min="0" step="any"
           value={amount} onChange={(e) => setAmount(e.target.value)} error={amountError} />
+        {selectedToken === "ETH" && balance && (
+          <button
+            type="button"
+            onClick={() => {
+              // Leave ~0.001 ETH for gas
+              const maxEth = Math.max(0, parseFloat(balance) - 0.001);
+              setAmount(maxEth > 0 ? maxEth.toFixed(6) : "0");
+            }}
+            className="text-xs text-brand hover:text-brand-light -mt-2 self-end"
+          >
+            最大 {balance} ETH
+          </button>
+        )}
 
         {/* Gas options */}
         <div>
