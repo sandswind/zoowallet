@@ -88,7 +88,14 @@ export type Page =
   | "send-success"
   | "history"
   | "security"
-  | "receive";
+  | "receive"
+  | "settings";
+
+export interface PriceData {
+  usd: number;
+  cny: number;
+  change24h: number;
+}
 
 export interface Notification {
   id: string;

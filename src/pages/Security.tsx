@@ -1,13 +1,22 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { zoo, IpcError } from "../lib/ipc";
 import { useWalletStore } from "../store/walletStore";
 import { useUiStore } from "../store/uiStore";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { Modal } from "../components/ui/Modal";
+import { CopyButton } from "../components/ui/CopyButton";
+
+/** Parse "请 N 秒后重试" from IpcError message, return seconds or 0 */
+function parseRateLimit(msg: string): number {
+  const m = msg.match(/请\s*(\d+)\s*秒/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+const PRIVKEY_AUTO_CLEAR_SECS = 30;
 
 export const Security: React.FC = () => {
-  const { currentAccount } = useWalletStore();
+  const { currentAccount, addAccount } = useWalletStore();
   const { navigate, showNotification } = useUiStore();
 
   const [showMnemonic, setShowMnemonic] = useState(false);
@@ -20,41 +29,76 @@ export const Security: React.FC = () => {
   const [confirmNewPwd, setConfirmNewPwd] = useState("");
   const [newAccountName, setNewAccountName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [countdown, setCountdown] = useState(0);     // rate-limit countdown
+  const [privKeyClear, setPrivKeyClear] = useState(0); // auto-clear countdown
 
   const [mnemonicWords, setMnemonicWords] = useState<string[]>([]);
   const [privateKey, setPrivateKey] = useState("");
 
-  const { addAccount } = useWalletStore();
+  // Rate-limit countdown
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const t = setInterval(() => setCountdown((c) => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [countdown]);
+
+  // Private key auto-clear countdown
+  useEffect(() => {
+    if (privKeyClear <= 0) return;
+    const t = setInterval(() => setPrivKeyClear((c) => {
+      if (c <= 1) {
+        setPrivateKey("");
+        setShowPrivKey(false);
+        return 0;
+      }
+      return c - 1;
+    }), 1000);
+    return () => clearInterval(t);
+  }, [privKeyClear]);
 
   const reset = () => {
     setPwd(""); setNewPwd(""); setConfirmNewPwd("");
     setMnemonicWords([]); setPrivateKey("");
+    setCountdown(0); setPrivKeyClear(0);
+  };
+
+  const handleRateLimitError = (e: unknown) => {
+    if (e instanceof IpcError) {
+      const secs = parseRateLimit(e.message);
+      if (secs > 0) setCountdown(secs);
+      showNotification("error", e.message);
+    } else {
+      showNotification("error", "操作失败");
+    }
   };
 
   const handleExportMnemonic = async () => {
+    if (countdown > 0) return;
     setLoading(true);
     try {
       const words = await zoo.exportMnemonic(pwd);
       setMnemonicWords(words);
     } catch (e) {
-      showNotification("error", e instanceof IpcError ? e.message : "导出失败");
+      handleRateLimitError(e);
     } finally { setLoading(false); }
   };
 
   const handleExportPrivKey = async () => {
-    if (!currentAccount) return;
+    if (!currentAccount || countdown > 0) return;
     setLoading(true);
     try {
       const key = await zoo.getPrivateKey({ account_id: currentAccount.id, chain: "ETH", password: pwd });
       setPrivateKey(key);
+      setPrivKeyClear(PRIVKEY_AUTO_CLEAR_SECS);
     } catch (e) {
-      showNotification("error", e instanceof IpcError ? e.message : "导出失败");
+      handleRateLimitError(e);
     } finally { setLoading(false); }
   };
 
   const handleChangePassword = async () => {
     if (newPwd !== confirmNewPwd) { showNotification("error", "新密码不一致"); return; }
     if (newPwd.length < 8) { showNotification("error", "密码至少 8 位"); return; }
+    if (countdown > 0) return;
     setLoading(true);
     try {
       await zoo.changePassword({ old_password: pwd, new_password: newPwd });
@@ -62,11 +106,12 @@ export const Security: React.FC = () => {
       setShowChangePwd(false);
       reset();
     } catch (e) {
-      showNotification("error", e instanceof IpcError ? e.message : "修改失败");
+      handleRateLimitError(e);
     } finally { setLoading(false); }
   };
 
   const handleDeriveAccount = async () => {
+    if (countdown > 0) return;
     setLoading(true);
     try {
       const account = await zoo.deriveNextAccount({ password: pwd, name: newAccountName });
@@ -75,7 +120,7 @@ export const Security: React.FC = () => {
       setShowDeriveModal(false);
       reset();
     } catch (e) {
-      showNotification("error", e instanceof IpcError ? e.message : "派生失败");
+      handleRateLimitError(e);
     } finally { setLoading(false); }
   };
 
@@ -122,8 +167,14 @@ export const Security: React.FC = () => {
       <Modal open={showMnemonic} onClose={() => { setShowMnemonic(false); reset(); }} title="导出助记词">
         {mnemonicWords.length === 0 ? (
           <div className="flex flex-col gap-4">
-            <Input type="password" label="钱包密码" value={pwd} onChange={(e) => setPwd(e.target.value)} autoFocus />
-            <Button fullWidth loading={loading} onClick={handleExportMnemonic} disabled={!pwd}>确认导出</Button>
+            <Input type="password" label="钱包密码" value={pwd} onChange={(e) => setPwd(e.target.value)} autoFocus
+              disabled={countdown > 0} />
+            {countdown > 0 && (
+              <p className="text-xs text-warning text-center">已锁定，请 {countdown} 秒后重试</p>
+            )}
+            <Button fullWidth loading={loading} onClick={handleExportMnemonic} disabled={!pwd || countdown > 0}>
+              确认导出
+            </Button>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -145,14 +196,31 @@ export const Security: React.FC = () => {
       <Modal open={showPrivKey} onClose={() => { setShowPrivKey(false); reset(); }} title="导出私钥">
         {!privateKey ? (
           <div className="flex flex-col gap-4">
-            <Input type="password" label="钱包密码" value={pwd} onChange={(e) => setPwd(e.target.value)} autoFocus />
-            <Button fullWidth loading={loading} onClick={handleExportPrivKey} disabled={!pwd}>确认导出</Button>
+            <Input type="password" label="钱包密码" value={pwd} onChange={(e) => setPwd(e.target.value)} autoFocus
+              disabled={countdown > 0} />
+            {countdown > 0 && (
+              <p className="text-xs text-warning text-center">已锁定，请 {countdown} 秒后重试</p>
+            )}
+            <Button fullWidth loading={loading} onClick={handleExportPrivKey} disabled={!pwd || countdown > 0}>
+              确认导出
+            </Button>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            <p className="font-mono text-xs break-all bg-bg-hover rounded-lg p-3 select-all">{privateKey}</p>
-            <p className="text-xs text-warning text-center">妥善保管，任何人持有私钥可控制资产</p>
-            <Button fullWidth onClick={() => { setShowPrivKey(false); reset(); }}>关闭</Button>
+            <div className="bg-bg-hover rounded-xl p-3 relative">
+              <p className="font-mono text-xs break-all select-all leading-5">{privateKey}</p>
+              <CopyButton text={privateKey} label="复制" className="absolute top-2 right-2" />
+            </div>
+            <p className="text-xs text-warning text-center">
+              妥善保管，任何人持有私钥可控制资产。将在 {privKeyClear} 秒后自动清除。
+            </p>
+            <div className="w-full bg-bg-card rounded-full h-1">
+              <div
+                className="bg-warning rounded-full h-1 transition-all"
+                style={{ width: `${(privKeyClear / PRIVKEY_AUTO_CLEAR_SECS) * 100}%` }}
+              />
+            </div>
+            <Button fullWidth onClick={() => { setShowPrivKey(false); reset(); }}>立即关闭</Button>
           </div>
         )}
       </Modal>
@@ -160,11 +228,18 @@ export const Security: React.FC = () => {
       {/* Change password modal */}
       <Modal open={showChangePwd} onClose={() => { setShowChangePwd(false); reset(); }} title="修改密码">
         <div className="flex flex-col gap-4">
-          <Input type="password" label="当前密码" value={pwd} onChange={(e) => setPwd(e.target.value)} autoFocus />
+          <Input type="password" label="当前密码" value={pwd} onChange={(e) => setPwd(e.target.value)} autoFocus
+            disabled={countdown > 0} />
           <Input type="password" label="新密码" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} />
           <Input type="password" label="确认新密码" value={confirmNewPwd} onChange={(e) => setConfirmNewPwd(e.target.value)}
             error={confirmNewPwd && confirmNewPwd !== newPwd ? "密码不一致" : undefined} />
-          <Button fullWidth loading={loading} onClick={handleChangePassword} disabled={!pwd || !newPwd || !confirmNewPwd}>确认修改</Button>
+          {countdown > 0 && (
+            <p className="text-xs text-warning text-center">已锁定，请 {countdown} 秒后重试</p>
+          )}
+          <Button fullWidth loading={loading} onClick={handleChangePassword}
+            disabled={!pwd || !newPwd || !confirmNewPwd || countdown > 0}>
+            确认修改
+          </Button>
         </div>
       </Modal>
 
@@ -172,8 +247,14 @@ export const Security: React.FC = () => {
       <Modal open={showDeriveModal} onClose={() => { setShowDeriveModal(false); reset(); }} title="派生新账户">
         <div className="flex flex-col gap-4">
           <Input label="账户名称" value={newAccountName} onChange={(e) => setNewAccountName(e.target.value)} placeholder="Account 2" />
-          <Input type="password" label="钱包密码" value={pwd} onChange={(e) => setPwd(e.target.value)} />
-          <Button fullWidth loading={loading} onClick={handleDeriveAccount} disabled={!pwd}>派生账户</Button>
+          <Input type="password" label="钱包密码" value={pwd} onChange={(e) => setPwd(e.target.value)}
+            disabled={countdown > 0} />
+          {countdown > 0 && (
+            <p className="text-xs text-warning text-center">已锁定，请 {countdown} 秒后重试</p>
+          )}
+          <Button fullWidth loading={loading} onClick={handleDeriveAccount} disabled={!pwd || countdown > 0}>
+            派生账户
+          </Button>
         </div>
       </Modal>
     </div>
