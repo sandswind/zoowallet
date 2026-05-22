@@ -3,7 +3,7 @@ pub mod models;
 pub mod services;
 
 use commands::{eth, wallet};
-use services::storage;
+use services::{db, storage};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,6 +13,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             storage::init_store_path(app.handle());
+            db::init_db(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

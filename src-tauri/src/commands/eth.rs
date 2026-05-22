@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use zeroize::Zeroize;
 
-use crate::{models::HashOut, services::rpc::ETH_RPC};
+use crate::{models::HashOut, services::{db, rpc::ETH_RPC}};
 use super::wallet::{get_eth_address, load_eth_private_key};
 
 // ── Data models ───────────────────────────────────────────────────────────────
@@ -102,7 +102,8 @@ pub struct TokenInfo {
 // ── Provider helper ───────────────────────────────────────────────────────────
 
 fn make_provider() -> alloy::providers::RootProvider<alloy::transports::http::Http<reqwest::Client>> {
-    ProviderBuilder::new().on_http(ETH_RPC.parse().expect("invalid RPC URL"))
+    let url = crate::services::rpc::eth_rpc();
+    ProviderBuilder::new().on_http(url.parse().expect("invalid RPC URL"))
 }
 
 fn gwei_str(wei: u128) -> String {
@@ -114,6 +115,10 @@ fn gwei_str(wei: u128) -> String {
 
 #[tauri::command]
 pub async fn eth_get_balance(address: String) -> Result<String, String> {
+    // Cache-first: TTL 30s
+    if let Some(cached) = db::get_balance("ETH", &address, db::TTL_BALANCE) {
+        return Ok(cached);
+    }
     let addr = Address::from_str(&address).map_err(|_| "无效的以太坊地址")?;
     let provider = make_provider();
     let wei = provider.get_balance(addr).await.map_err(|e| format!("获取余额失败: {e}"))?;
@@ -122,6 +127,7 @@ pub async fn eth_get_balance(address: String) -> Result<String, String> {
         let dec = &eth[dot + 1..];
         if dec.len() > 6 { format!("{}.{}", &eth[..dot], &dec[..6]) } else { eth }
     } else { eth };
+    db::set_balance("ETH", &address, &trimmed, None);
     Ok(trimmed)
 }
 
@@ -175,6 +181,12 @@ pub async fn eth_send_transaction(
 
 #[tauri::command]
 pub async fn eth_get_gas_options() -> Result<GasOptions, String> {
+    // Cache-first: TTL 15s
+    if let Some(cached) = db::get_gas("ETH", db::TTL_GAS) {
+        if let Ok(opts) = serde_json::from_value::<GasOptions>(cached) {
+            return Ok(opts);
+        }
+    }
     let provider = make_provider();
     let block = provider.get_block_by_number(alloy::eips::BlockNumberOrTag::Latest, false).await
         .map_err(|e| format!("获取区块失败: {e}"))?.ok_or("区块不存在")?;
@@ -225,6 +237,12 @@ pub async fn eth_get_gas_options() -> Result<GasOptions, String> {
 
 #[tauri::command]
 pub async fn eth_get_token_balances(address: String) -> Result<Vec<TokenBalance>, String> {
+    // Cache-first: TTL 60s
+    if let Some(cached) = db::get_token_balances("ETH", &address, db::TTL_TOKENS) {
+        if let Ok(tokens) = serde_json::from_value::<Vec<TokenBalance>>(cached) {
+            return Ok(tokens);
+        }
+    }
     // Use Etherscan free API (no key required for limited queries)
     let url = format!(
         "https://api.etherscan.io/api?module=account&action=tokentx&address={address}&startblock=0&endblock=999999999&sort=desc&offset=100"
@@ -251,7 +269,10 @@ pub async fn eth_get_token_balances(address: String) -> Result<Vec<TokenBalance>
         seen.insert(contract.clone(), TokenBalance { symbol, name, balance, decimals, contract_address: contract });
     }
 
-    Ok(seen.into_values().filter(|t| t.balance != "0" && t.balance != "0.000000").collect())
+    let result: Vec<TokenBalance> = seen.into_values().filter(|t| t.balance != "0" && t.balance != "0.000000").collect();
+    // Persist to cache
+    if let Ok(v) = serde_json::to_value(&result) { db::set_token_balances("ETH", &address, &v); }
+    Ok(result)
 }
 
 async fn fetch_erc20_balance(owner: &str, contract: &str, decimals: u8) -> Result<String, String> {
@@ -496,6 +517,14 @@ pub async fn eth_get_custom_token_balance(
 pub async fn eth_get_history(address: String, page: u32, offset: u32) -> Result<Vec<TxRecord>, String> {
     let page = page.max(1);
     let offset = if offset == 0 { 20 } else { offset };
+    // Cache only page 1
+    if page == 1 {
+        if let Some(cached) = db::get_tx_history("ETH", &address, db::TTL_HISTORY) {
+            if let Ok(txs) = serde_json::from_value::<Vec<TxRecord>>(cached) {
+                return Ok(txs);
+            }
+        }
+    }
     let url = format!(
         "https://api.etherscan.io/api?module=account&action=txlist&address={address}&startblock=0&endblock=99999999&page={page}&offset={offset}&sort=desc"
     );
@@ -507,7 +536,7 @@ pub async fn eth_get_history(address: String, page: u32, offset: u32) -> Result<
         None => return Ok(vec![]),
     };
 
-    Ok(txs.iter().map(|tx| TxRecord {
+    let records: Vec<TxRecord> = txs.iter().map(|tx| TxRecord {
         hash:          tx["hash"].as_str().unwrap_or("").to_string(),
         from:          tx["from"].as_str().unwrap_or("").to_string(),
         to:            tx["to"].as_str().unwrap_or("").to_string(),
@@ -518,10 +547,13 @@ pub async fn eth_get_history(address: String, page: u32, offset: u32) -> Result<
         is_error:      tx["isError"].as_str().unwrap_or("0") == "1",
         method:        tx["functionName"].as_str().filter(|s| !s.is_empty()).map(String::from),
         confirmations: tx["confirmations"].as_str().map(String::from),
-    }).collect())
-}
-
-// ── Phase 3: Estimate gas ─────────────────────────────────────────────────────
+    }).collect();
+    // Persist page 1 to cache
+    if page == 1 {
+        if let Ok(v) = serde_json::to_value(&records) { db::set_tx_history("ETH", &address, &v); }
+    }
+    Ok(records)
+} ─────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn eth_estimate_gas(
