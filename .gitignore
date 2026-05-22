@@ -40,3 +40,8 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+
+# Yarn PnP state (binary, don't commit)
+.yarn/install-state.gz
+.yarn/cache
