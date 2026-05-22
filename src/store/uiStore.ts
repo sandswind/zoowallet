@@ -7,10 +7,7 @@ interface UiState {
   lastSentHash: string | null;
 
   navigate: (page: Page) => void;
-  showNotification: (
-    type: Notification["type"],
-    message: string,
-  ) => void;
+  showNotification: (type: Notification["type"], message: string) => void;
   dismissNotification: (id: string) => void;
   setLastSentHash: (hash: string | null) => void;
 }
@@ -27,20 +24,14 @@ export const useUiStore = create<UiState>((set) => ({
     set((s) => ({
       notifications: [...s.notifications, { id, type, message }],
     }));
-    // Auto-dismiss after 4 s
     setTimeout(
-      () =>
-        set((s) => ({
-          notifications: s.notifications.filter((n) => n.id !== id),
-        })),
+      () => set((s) => ({ notifications: s.notifications.filter((n) => n.id !== id) })),
       4000,
     );
   },
 
   dismissNotification: (id) =>
-    set((s) => ({
-      notifications: s.notifications.filter((n) => n.id !== id),
-    })),
+    set((s) => ({ notifications: s.notifications.filter((n) => n.id !== id) })),
 
   setLastSentHash: (lastSentHash) => set({ lastSentHash }),
 }));
