@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://eth.llamarpc.com https://api.coingecko.com https://mempool.space https://blockstream.info https://mainnet.helius-rpc.com https://api.mainnet-beta.solana.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' https://eth.llamarpc.com https://rpc.ankr.com https://ethereum.publicnode.com https://1rpc.io https://cloudflare-eth.com https://api.mainnet-beta.solana.com https://solana.publicnode.com https://mempool.space https://blockstream.info https://api.etherscan.io https://api.coingecko.com https://mainnet.helius-rpc.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {
