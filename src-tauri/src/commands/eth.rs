@@ -111,6 +111,41 @@ fn gwei_str(wei: u128) -> String {
     format!("{gwei:.4}")
 }
 
+/// Parse a decimal ETH string (e.g. "0.123456789012345678") into wei U256
+/// without floating-point precision loss.
+fn parse_eth_to_wei(amount: &str) -> Result<alloy::primitives::U256, String> {
+    let amount = amount.trim();
+    if amount.is_empty() { return Err("金额不能为空".to_string()); }
+
+    // Split on decimal point
+    let (whole, frac) = if let Some(dot) = amount.find('.') {
+        (&amount[..dot], &amount[dot + 1..])
+    } else {
+        (amount, "")
+    };
+
+    // Validate digits
+    if !whole.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return Err("无效的金额".to_string());
+    }
+
+    const DECIMALS: usize = 18;
+    // Truncate or pad fractional part to exactly 18 digits
+    let frac_padded = if frac.len() >= DECIMALS {
+        frac[..DECIMALS].to_string()
+    } else {
+        format!("{:0<width$}", frac, width = DECIMALS)
+    };
+
+    let wei_str = format!("{whole}{frac_padded}");
+    // Strip leading zeros to avoid parsing issues, but keep at least "0"
+    let wei_stripped = wei_str.trim_start_matches('0');
+    let wei_stripped = if wei_stripped.is_empty() { "0" } else { wei_stripped };
+
+    alloy::primitives::U256::from_str_radix(wei_stripped, 10)
+        .map_err(|e| format!("金额解析失败: {e}"))
+}
+
 // ── Phase 1 Commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -147,8 +182,8 @@ pub async fn eth_send_transaction(
     let wallet = EthereumWallet::from(signer);
     let to_addr = Address::from_str(&to).map_err(|_| "无效的收款地址")?;
 
-    let amount_f: f64 = amount.parse().map_err(|_| "无效的金额")?;
-    let wei_value = U256::from((amount_f * 1e18) as u128);
+    // Parse amount to wei with full precision via string manipulation (避免 f64 精度损失)
+    let wei_value = parse_eth_to_wei(&amount)?;
     let provider = make_provider();
     let nonce = provider.get_transaction_count(from_addr).await.map_err(|e| format!("获取 nonce 失败: {e}"))?;
 
@@ -165,7 +200,8 @@ pub async fn eth_send_transaction(
         ((base_fee as u128) * 2 + prio, prio)
     };
 
-    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(ETH_RPC.parse().expect("invalid RPC URL"));
+    let rpc_url = crate::services::rpc::eth_rpc();
+    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(rpc_url.parse().map_err(|_| "RPC URL 无效")?);
     let tx = TransactionRequest::default()
         .from(from_addr).to(to_addr).value(wei_value).nonce(nonce)
         .max_fee_per_gas(max_fee).max_priority_fee_per_gas(prio_fee).gas_limit(21_000u64);
@@ -230,7 +266,11 @@ pub async fn eth_get_gas_options() -> Result<GasOptions, String> {
             base_fee_gwei: None,
             is_eip1559: false,
         })
-    }
+    }.map(|opts| {
+        // Write to cache so subsequent calls within TTL skip the RPC round-trip
+        if let Ok(v) = serde_json::to_value(&opts) { db::set_gas("ETH", &v); }
+        opts
+    })
 }
 
 // ── Phase 3: Token balances ───────────────────────────────────────────────────
@@ -285,14 +325,28 @@ async fn fetch_erc20_balance(owner: &str, contract: &str, decimals: u8) -> Resul
         "params": [{"to": contract, "data": data}, "latest"]
     });
 
-    let resp = crate::services::rpc::HTTP.post(ETH_RPC).json(&body).send().await
+    let rpc_url = crate::services::rpc::eth_rpc();
+    let resp = crate::services::rpc::HTTP.post(&rpc_url).json(&body).send().await
         .map_err(|e| format!("eth_call 失败: {e}"))?;
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     let hex_val = json["result"].as_str().unwrap_or("0x0");
     let hex_clean = hex_val.trim_start_matches("0x");
-    let raw: u128 = u128::from_str_radix(if hex_clean.is_empty() { "0" } else { &hex_clean[hex_clean.len().saturating_sub(32)..] }, 16).unwrap_or(0);
-    let divisor = 10u128.pow(decimals as u32) as f64;
-    Ok(format!("{:.6}", raw as f64 / divisor))
+
+    // ERC-20 balanceOf returns a 32-byte (64 hex char) big-endian uint256.
+    // Take the full 64 chars (zero-padded from the left) and parse as U256 via
+    // the `alloy` primitive to avoid u128 overflow for tokens with large supply.
+    let padded_hex = format!("{:0>64}", hex_clean);
+    let balance_u256 = alloy::primitives::U256::from_str_radix(&padded_hex, 16).unwrap_or_default();
+
+    // Format with correct decimal places (display up to 6 significant decimals)
+    let divisor = alloy::primitives::U256::from(10u128.pow(decimals.min(18) as u32));
+    let whole = balance_u256 / divisor;
+    let remainder = balance_u256 % divisor;
+
+    // Build decimal string with 6 decimal places
+    let remainder_str = format!("{:0>width$}", remainder, width = decimals.min(18) as usize);
+    let decimal_part = &remainder_str[..6.min(remainder_str.len())];
+    Ok(format!("{whole}.{decimal_part}"))
 }
 
 
@@ -334,7 +388,8 @@ pub async fn eth_send_token(
     let nonce = provider.get_transaction_count(from_addr).await.map_err(|e| format!("获取 nonce 失败: {e}"))?;
     let (max_fee, prio_fee) = parse_gas_fees(&max_fee_gwei, &priority_fee_gwei, &provider).await;
 
-    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(ETH_RPC.parse().expect("invalid RPC URL"));
+    let rpc_url = crate::services::rpc::eth_rpc();
+    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(rpc_url.parse().map_err(|_| "RPC URL 无效")?);
     let tx = TransactionRequest::default()
         .from(from_addr).to(contract_addr).value(U256::ZERO).input(calldata.into())
         .nonce(nonce).max_fee_per_gas(max_fee).max_priority_fee_per_gas(prio_fee).gas_limit(100_000u64);
@@ -600,7 +655,7 @@ pub async fn eth_speed_up_transaction(
     let new_max_fee = (old_max_fee as f64 * 1.1) as u128;
     let new_prio    = old_prio + 2_000_000_000u128;
 
-    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(ETH_RPC.parse().expect("invalid RPC URL"));
+    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(crate::services::rpc::eth_rpc().parse().map_err(|_| "RPC URL 无效")?);
     let tx = TransactionRequest::default()
         .from(from_addr)
         .to(old_tx.to.unwrap_or(from_addr))
@@ -641,7 +696,7 @@ pub async fn eth_cancel_transaction(
     let new_max_fee = (old_max_fee as f64 * 1.1) as u128;
     let new_prio    = old_prio + 2_000_000_000u128;
 
-    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(ETH_RPC.parse().expect("invalid RPC URL"));
+    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(crate::services::rpc::eth_rpc().parse().map_err(|_| "RPC URL 无效")?);
     // Self-transfer with 0 value at same nonce = cancel
     let tx = TransactionRequest::default()
         .from(from_addr).to(from_addr).value(U256::ZERO)

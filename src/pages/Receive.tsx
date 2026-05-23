@@ -1,22 +1,31 @@
 import React, { useEffect, useState } from "react";
+import QRCode from "qrcode";
 import { useWalletStore } from "../store/walletStore";
 import { useUiStore } from "../store/uiStore";
 import { Button } from "../components/ui/Button";
 
-function QRMockup({ value }: { value: string }) {
-  // Deterministic pattern from address
-  const seed = value.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-  const cells = Array.from({ length: 25 }, (_, i) => {
-    const r = (seed * (i + 7) * 13 + i * 31) % 100;
-    return r > 45;
-  });
+function QRCodeImage({ value }: { value: string }) {
+  const [dataUrl, setDataUrl] = useState<string>("");
+
+  useEffect(() => {
+    if (!value) return;
+    QRCode.toDataURL(value, {
+      width: 200,
+      margin: 2,
+      color: { dark: "#001E2B", light: "#F9FBFA" },
+      errorCorrectionLevel: "M",
+    })
+      .then(setDataUrl)
+      .catch(() => setDataUrl(""));
+  }, [value]);
+
+  if (!dataUrl) {
+    return <div className="w-[200px] h-[200px] bg-coal rounded-xl animate-pulse" />;
+  }
+
   return (
-    <div className="bg-fog p-4 rounded-2xl inline-block">
-      <div className="grid gap-0.5" style={{ gridTemplateColumns: "repeat(5,1fr)", width: 140 }}>
-        {cells.map((on, i) => (
-          <div key={i} className={`w-5 h-5 rounded-sm ${on ? "bg-forest" : "bg-fog"}`} />
-        ))}
-      </div>
+    <div className="bg-fog p-3 rounded-2xl inline-block">
+      <img src={dataUrl} alt="ETH address QR code" width={200} height={200} className="rounded-lg" />
     </div>
   );
 }
@@ -61,7 +70,7 @@ export const Receive: React.FC = () => {
 
         {/* QR card */}
         <div className="bg-midnight rounded-2xl border border-canopy/25 p-6 flex flex-col items-center gap-4 w-full shadow-card">
-          {ethAddress ? <QRMockup value={ethAddress} /> : <div className="w-[148px] h-[148px] bg-coal rounded-2xl animate-pulse" />}
+          {ethAddress ? <QRCodeImage value={ethAddress} /> : <div className="w-[200px] h-[200px] bg-coal rounded-2xl animate-pulse" />}
 
           <div className="text-center w-full">
             <p className="label mb-2">ETH 地址</p>

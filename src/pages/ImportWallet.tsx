@@ -22,7 +22,7 @@ const ChainPill: React.FC<{ label: string; active: boolean; onClick: () => void 
 );
 
 export const ImportWallet: React.FC = () => {
-  const { setAccounts, setIsUnlocked, addAccount } = useWalletStore();
+  const { setAccounts, setIsUnlocked, addAccount, accounts } = useWalletStore();
   const { navigate, showNotification } = useUiStore();
 
   const [mode, setMode] = useState<Mode>("mnemonic");
@@ -35,12 +35,29 @@ export const ImportWallet: React.FC = () => {
   const [confirmPwd, setConfirmPwd] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const hasWallet = useWalletStore(s => s.accounts.length > 0);
+  // True when a wallet already exists on disk (guarded by accounts in store OR
+  // by the has_wallet IPC result checked at startup).
+  const hasWallet = accounts.length > 0;
 
   const handleImportMnemonic = async () => {
     const ws = mnemonicInput.trim().split(/\s+/);
     if (ws.length !== 12) { showNotification("error", "助记词需要 12 个单词"); return; }
-    if (!hasWallet && password.length < 8) { showNotification("error", "密码至少 8 位"); return; }
+
+    // ── Guard: wallet already exists ──────────────────────────────────────────
+    // Calling create_from_mnemonic when a wallet is already set up would
+    // silently overwrite the existing password_verify, mnemonic and all eth_keys.
+    // Instead we block the path and direct the user to the safe alternatives.
+    if (hasWallet) {
+      showNotification(
+        "error",
+        "钱包已存在。如需添加账户，请使用"安全 → 派生新账户"；如需恢复此助记词，请先在新设备上使用，或卸载后重新安装。",
+      );
+      return;
+    }
+    // ── New wallet: proceed with creation ─────────────────────────────────────
+    if (password.length < 8) { showNotification("error", "密码至少 8 位"); return; }
+    if (password !== confirmPwd) { showNotification("error", "两次密码不一致"); return; }
+
     setLoading(true);
     try {
       const acc = await zoo.createWalletFromMnemonic({ words: ws, password, name: name || "Imported Wallet" });
@@ -114,9 +131,23 @@ export const ImportWallet: React.FC = () => {
                   error={confirmPwd && confirmPwd !== password ? "密码不一致" : undefined} />
               </>
             ) : (
-              <Input label="验证密码" type="password" value={password} onChange={e => setPassword(e.target.value)} />
+              /* Wallet already exists — show a warning banner instead of password fields.
+                 The button click handler will surface the same message as a notification. */
+              <div className="flex items-start gap-2.5 bg-warning/5 border border-warning/25 rounded-xl px-4 py-3">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFC010" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <p className="text-xs text-warning/80 leading-relaxed">
+                  钱包已存在，导入助记词会覆盖当前钱包数据。<br />
+                  如需添加账户，请前往 <strong className="text-warning">安全 → 派生新账户</strong>。
+                </p>
+              </div>
             )}
-            <Button fullWidth size="lg" loading={loading} onClick={handleImportMnemonic}>导入助记词</Button>
+            <Button fullWidth size="lg" loading={loading} onClick={handleImportMnemonic}
+              disabled={hasWallet}>
+              导入助记词
+            </Button>
           </>
         )}
 
