@@ -331,13 +331,8 @@ pub fn change_password(old_password: String, new_password: String) -> Result<(),
 
     // Verify old password
     let pv_blob = store.password_verify.as_ref().ok_or("钱包数据不存在")?;
-    let pv_plain = crypto::decrypt(pv_blob, old_password.as_bytes())
+    crypto::decrypt(pv_blob, old_password.as_bytes())
         .map_err(|_| { storage::record_fail(); "当前密码不正确" })?;
-
-    if pv_plain != b"OK" {
-        storage::record_fail();
-        return Err("当前密码不正确".to_string());
-    }
     storage::record_success();
 
     let old_pwd = old_password.as_bytes();
@@ -373,17 +368,14 @@ pub fn load_eth_private_key(account_id: &str, password: &str) -> Result<Vec<u8>,
     let store = load();
     let blob = store.eth_keys.get(account_id).ok_or("账户不存在或无 ETH 私钥")?;
 
+    // Single decrypt — the private key blob itself is the authoritative proof.
+    // Removing the redundant password_verify re-check that previously caused
+    // record_fail() to fire twice on a wrong password, halving the effective
+    // rate-limit threshold from 5 to ~2-3 attempts.
     let hex_bytes = crypto::decrypt(blob, password.as_bytes()).map_err(|_| {
         storage::record_fail();
         "密码不正确"
     })?;
-
-    if let Some(pv_blob) = &store.password_verify {
-        let _ = crypto::decrypt(pv_blob, password.as_bytes()).map_err(|_| {
-            storage::record_fail();
-            "密码不正确"
-        })?;
-    }
     storage::record_success();
 
     let hex_str = std::str::from_utf8(&hex_bytes).map_err(|_| "私钥格式错误")?;
