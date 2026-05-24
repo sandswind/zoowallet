@@ -2,7 +2,7 @@ pub mod commands;
 pub mod models;
 pub mod services;
 
-use commands::{eth, wallet};
+use commands::{eth, network, wallet};
 use services::{db, storage};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -45,6 +45,12 @@ pub fn run() {
             eth::eth_estimate_gas,
             eth::eth_speed_up_transaction,
             eth::eth_cancel_transaction,
+            // Network management — dynamic EVM L2 registration
+            network::register_network,
+            network::set_active_network,
+            network::get_active_network,
+            network::list_networks,
+            network::remove_network,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

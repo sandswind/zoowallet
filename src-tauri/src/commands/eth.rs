@@ -12,6 +12,7 @@ use zeroize::Zeroize;
 
 use crate::{models::HashOut, services::{db, rpc::ETH_RPC}};
 use super::wallet::{get_eth_address, load_eth_private_key};
+use super::network::explorer_api_url;
 
 // ── Data models ───────────────────────────────────────────────────────────────
 
@@ -101,9 +102,23 @@ pub struct TokenInfo {
 
 // ── Provider helper ───────────────────────────────────────────────────────────
 
+/// Build a provider for the currently active chain.
 fn make_provider() -> alloy::providers::RootProvider<alloy::transports::http::Http<reqwest::Client>> {
-    let url = crate::services::rpc::eth_rpc();
+    let chain = crate::services::rpc::get_active_chain();
+    let url = crate::services::rpc::get_best_rpc(&chain)
+        .unwrap_or_else(|| "https://eth.llamarpc.com".to_string());
     ProviderBuilder::new().on_http(url.parse().expect("invalid RPC URL"))
+}
+
+/// Build a provider for a specific chain (used in signed-tx helpers).
+fn make_provider_for(chain: &str) -> String {
+    crate::services::rpc::get_best_rpc(chain)
+        .unwrap_or_else(|| "https://eth.llamarpc.com".to_string())
+}
+
+/// Active chain ID string.
+fn active_chain() -> String {
+    crate::services::rpc::get_active_chain()
 }
 
 fn gwei_str(wei: u128) -> String {
@@ -150,8 +165,9 @@ fn parse_eth_to_wei(amount: &str) -> Result<alloy::primitives::U256, String> {
 
 #[tauri::command]
 pub async fn eth_get_balance(address: String) -> Result<String, String> {
+    let chain = active_chain();
     // Cache-first: TTL 30s
-    if let Some(cached) = db::get_balance("ETH", &address, db::TTL_BALANCE) {
+    if let Some(cached) = db::get_balance(&chain, &address, db::TTL_BALANCE) {
         return Ok(cached);
     }
     let addr = Address::from_str(&address).map_err(|_| "无效的以太坊地址")?;
@@ -162,7 +178,7 @@ pub async fn eth_get_balance(address: String) -> Result<String, String> {
         let dec = &eth[dot + 1..];
         if dec.len() > 6 { format!("{}.{}", &eth[..dot], &dec[..6]) } else { eth }
     } else { eth };
-    db::set_balance("ETH", &address, &trimmed, None);
+    db::set_balance(&chain, &address, &trimmed, None);
     Ok(trimmed)
 }
 
@@ -200,7 +216,8 @@ pub async fn eth_send_transaction(
         ((base_fee as u128) * 2 + prio, prio)
     };
 
-    let rpc_url = crate::services::rpc::eth_rpc();
+    let rpc_url = crate::services::rpc::get_best_rpc(&active_chain())
+        .unwrap_or_else(|| crate::services::rpc::eth_rpc());
     let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(rpc_url.parse().map_err(|_| "RPC URL 无效")?);
     let tx = TransactionRequest::default()
         .from(from_addr).to(to_addr).value(wei_value).nonce(nonce)
@@ -217,8 +234,9 @@ pub async fn eth_send_transaction(
 
 #[tauri::command]
 pub async fn eth_get_gas_options() -> Result<GasOptions, String> {
+    let chain = active_chain();
     // Cache-first: TTL 15s
-    if let Some(cached) = db::get_gas("ETH", db::TTL_GAS) {
+    if let Some(cached) = db::get_gas(&chain, db::TTL_GAS) {
         if let Ok(opts) = serde_json::from_value::<GasOptions>(cached) {
             return Ok(opts);
         }
@@ -268,7 +286,7 @@ pub async fn eth_get_gas_options() -> Result<GasOptions, String> {
         })
     }.map(|opts| {
         // Write to cache so subsequent calls within TTL skip the RPC round-trip
-        if let Ok(v) = serde_json::to_value(&opts) { db::set_gas("ETH", &v); }
+        if let Ok(v) = serde_json::to_value(&opts) { db::set_gas(&chain, &v); }
         opts
     })
 }
@@ -277,18 +295,21 @@ pub async fn eth_get_gas_options() -> Result<GasOptions, String> {
 
 #[tauri::command]
 pub async fn eth_get_token_balances(address: String) -> Result<Vec<TokenBalance>, String> {
+    let chain = active_chain();
     // Cache-first: TTL 60s
-    if let Some(cached) = db::get_token_balances("ETH", &address, db::TTL_TOKENS) {
+    if let Some(cached) = db::get_token_balances(&chain, &address, db::TTL_TOKENS) {
         if let Ok(tokens) = serde_json::from_value::<Vec<TokenBalance>>(cached) {
             return Ok(tokens);
         }
     }
-    // Use Etherscan free API (no key required for limited queries)
+    // Resolve explorer API for active chain (fallback to Etherscan)
+    let api_base = explorer_api_url(&chain)
+        .unwrap_or_else(|| "https://api.etherscan.io/api".to_string());
     let url = format!(
-        "https://api.etherscan.io/api?module=account&action=tokentx&address={address}&startblock=0&endblock=999999999&sort=desc&offset=100"
+        "{api_base}?module=account&action=tokentx&address={address}&startblock=0&endblock=999999999&sort=desc&offset=100"
     );
     let resp = crate::services::rpc::HTTP.get(&url).send().await
-        .map_err(|e| format!("请求 Etherscan 失败: {e}"))?;
+        .map_err(|e| format!("请求 Explorer 失败: {e}"))?;
     let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {e}"))?;
 
     let txs = json["result"].as_array().ok_or("无代币记录")?;
@@ -310,8 +331,7 @@ pub async fn eth_get_token_balances(address: String) -> Result<Vec<TokenBalance>
     }
 
     let result: Vec<TokenBalance> = seen.into_values().filter(|t| t.balance != "0" && t.balance != "0.000000").collect();
-    // Persist to cache
-    if let Ok(v) = serde_json::to_value(&result) { db::set_token_balances("ETH", &address, &v); }
+    if let Ok(v) = serde_json::to_value(&result) { db::set_token_balances(&chain, &address, &v); }
     Ok(result)
 }
 
@@ -388,7 +408,8 @@ pub async fn eth_send_token(
     let nonce = provider.get_transaction_count(from_addr).await.map_err(|e| format!("获取 nonce 失败: {e}"))?;
     let (max_fee, prio_fee) = parse_gas_fees(&max_fee_gwei, &priority_fee_gwei, &provider).await;
 
-    let rpc_url = crate::services::rpc::eth_rpc();
+    let rpc_url = crate::services::rpc::get_best_rpc(&active_chain())
+        .unwrap_or_else(|| crate::services::rpc::eth_rpc());
     let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(rpc_url.parse().map_err(|_| "RPC URL 无效")?);
     let tx = TransactionRequest::default()
         .from(from_addr).to(contract_addr).value(U256::ZERO).input(calldata.into())
@@ -526,11 +547,13 @@ pub async fn eth_preview_transaction(
 pub async fn eth_query_token_info(contract_address: String) -> Result<TokenInfo, String> {
     // Call name(), symbol(), decimals() via eth_call
     async fn call(contract: &str, data: &str) -> Option<String> {
+        let rpc_url = crate::services::rpc::get_best_rpc(&crate::services::rpc::get_active_chain())
+            .unwrap_or_else(|| ETH_RPC.to_string());
         let body = serde_json::json!({
             "jsonrpc":"2.0","id":1,"method":"eth_call",
             "params":[{"to":contract,"data":data},"latest"]
         });
-        let resp = crate::services::rpc::HTTP.post(ETH_RPC).json(&body).send().await.ok()?;
+        let resp = crate::services::rpc::HTTP.post(&rpc_url).json(&body).send().await.ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
         json["result"].as_str().map(String::from)
     }
@@ -538,7 +561,6 @@ pub async fn eth_query_token_info(contract_address: String) -> Result<TokenInfo,
     let symbol_raw = call(&contract_address, "0x95d89b41").await.unwrap_or_default();
     let name_raw   = call(&contract_address, "0x06fdde03").await.unwrap_or_default();
     let dec_raw    = call(&contract_address, "0x313ce567").await.unwrap_or_default();
-
     fn decode_string(hex: &str) -> String {
         let h = hex.trim_start_matches("0x");
         if h.len() < 128 { return String::new(); }
@@ -570,18 +592,21 @@ pub async fn eth_get_custom_token_balance(
 
 #[tauri::command]
 pub async fn eth_get_history(address: String, page: u32, offset: u32) -> Result<Vec<TxRecord>, String> {
+    let chain = active_chain();
     let page = page.max(1);
     let offset = if offset == 0 { 20 } else { offset };
     // Cache only page 1
     if page == 1 {
-        if let Some(cached) = db::get_tx_history("ETH", &address, db::TTL_HISTORY) {
+        if let Some(cached) = db::get_tx_history(&chain, &address, db::TTL_HISTORY) {
             if let Ok(txs) = serde_json::from_value::<Vec<TxRecord>>(cached) {
                 return Ok(txs);
             }
         }
     }
+    let api_base = explorer_api_url(&chain)
+        .unwrap_or_else(|| "https://api.etherscan.io/api".to_string());
     let url = format!(
-        "https://api.etherscan.io/api?module=account&action=txlist&address={address}&startblock=0&endblock=99999999&page={page}&offset={offset}&sort=desc"
+        "{api_base}?module=account&action=txlist&address={address}&startblock=0&endblock=99999999&page={page}&offset={offset}&sort=desc"
     );
     let resp = crate::services::rpc::HTTP.get(&url).send().await.map_err(|e| format!("请求历史失败: {e}"))?;
     let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析历史失败: {e}"))?;
@@ -605,7 +630,7 @@ pub async fn eth_get_history(address: String, page: u32, offset: u32) -> Result<
     }).collect();
     // Persist page 1 to cache
     if page == 1 {
-        if let Ok(v) = serde_json::to_value(&records) { db::set_tx_history("ETH", &address, &v); }
+        if let Ok(v) = serde_json::to_value(&records) { db::set_tx_history(&chain, &address, &v); }
     }
     Ok(records)
 } ─────────────────────────────────────────────────────
@@ -655,7 +680,7 @@ pub async fn eth_speed_up_transaction(
     let new_max_fee = (old_max_fee as f64 * 1.1) as u128;
     let new_prio    = old_prio + 2_000_000_000u128;
 
-    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(crate::services::rpc::eth_rpc().parse().map_err(|_| "RPC URL 无效")?);
+    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(crate::services::rpc::get_best_rpc(&active_chain()).unwrap_or_else(|| crate::services::rpc::eth_rpc()).parse().map_err(|_| "RPC URL 无效")?);
     let tx = TransactionRequest::default()
         .from(from_addr)
         .to(old_tx.to.unwrap_or(from_addr))
@@ -696,7 +721,7 @@ pub async fn eth_cancel_transaction(
     let new_max_fee = (old_max_fee as f64 * 1.1) as u128;
     let new_prio    = old_prio + 2_000_000_000u128;
 
-    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(crate::services::rpc::eth_rpc().parse().map_err(|_| "RPC URL 无效")?);
+    let provider_with_signer = ProviderBuilder::new().wallet(wallet).on_http(crate::services::rpc::get_best_rpc(&active_chain()).unwrap_or_else(|| crate::services::rpc::eth_rpc()).parse().map_err(|_| "RPC URL 无效")?);
     // Self-transfer with 0 value at same nonce = cancel
     let tx = TransactionRequest::default()
         .from(from_addr).to(from_addr).value(U256::ZERO)
