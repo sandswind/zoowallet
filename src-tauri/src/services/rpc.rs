@@ -5,6 +5,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+// ── Active chain (default: ETH) ───────────────────────────────────────────────
+
+static ACTIVE_CHAIN: LazyLock<RwLock<String>> =
+    LazyLock::new(|| RwLock::new("ETH".to_string()));
+
+pub fn get_active_chain() -> String {
+    ACTIVE_CHAIN
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+pub fn set_active_chain(chain_id: &str) {
+    let mut guard = ACTIVE_CHAIN.write().unwrap_or_else(|p| p.into_inner());
+    *guard = chain_id.to_uppercase();
+}
+
 // ── Global HTTP client ────────────────────────────────────────────────────────
 
 pub static HTTP: LazyLock<Client> = LazyLock::new(|| {
@@ -45,6 +62,7 @@ static ENDPOINTS: LazyLock<RwLock<HashMap<String, Vec<Endpoint>>>> =
 fn build_default_endpoints() -> HashMap<String, Vec<Endpoint>> {
     let mut map = HashMap::new();
 
+    // ── L1 ────────────────────────────────────────────────────────────────────
     map.insert("ETH".to_string(), vec![
         Endpoint::new("https://eth.llamarpc.com"),
         Endpoint::new("https://rpc.ankr.com/eth"),
@@ -53,6 +71,74 @@ fn build_default_endpoints() -> HashMap<String, Vec<Endpoint>> {
         Endpoint::new("https://cloudflare-eth.com"),
     ]);
 
+    // ── EVM L2 / Alt-L1 ──────────────────────────────────────────────────────
+    map.insert("BASE".to_string(), vec![
+        Endpoint::new("https://mainnet.base.org"),
+        Endpoint::new("https://base.llamarpc.com"),
+        Endpoint::new("https://base.publicnode.com"),
+        Endpoint::new("https://1rpc.io/base"),
+        Endpoint::new("https://rpc.ankr.com/base"),
+    ]);
+
+    map.insert("ARB".to_string(), vec![
+        Endpoint::new("https://arb1.arbitrum.io/rpc"),
+        Endpoint::new("https://arbitrum.llamarpc.com"),
+        Endpoint::new("https://arbitrum-one.publicnode.com"),
+        Endpoint::new("https://1rpc.io/arb"),
+        Endpoint::new("https://rpc.ankr.com/arbitrum"),
+    ]);
+
+    map.insert("OP".to_string(), vec![
+        Endpoint::new("https://mainnet.optimism.io"),
+        Endpoint::new("https://optimism.llamarpc.com"),
+        Endpoint::new("https://optimism.publicnode.com"),
+        Endpoint::new("https://1rpc.io/op"),
+        Endpoint::new("https://rpc.ankr.com/optimism"),
+    ]);
+
+    map.insert("BSC".to_string(), vec![
+        Endpoint::new("https://bsc-dataseed1.binance.org"),
+        Endpoint::new("https://bsc-dataseed2.binance.org"),
+        Endpoint::new("https://bsc.llamarpc.com"),
+        Endpoint::new("https://bsc.publicnode.com"),
+        Endpoint::new("https://rpc.ankr.com/bsc"),
+    ]);
+
+    map.insert("POLYGON".to_string(), vec![
+        Endpoint::new("https://polygon-rpc.com"),
+        Endpoint::new("https://polygon.llamarpc.com"),
+        Endpoint::new("https://polygon.publicnode.com"),
+        Endpoint::new("https://1rpc.io/matic"),
+        Endpoint::new("https://rpc.ankr.com/polygon"),
+    ]);
+
+    map.insert("AVAX".to_string(), vec![
+        Endpoint::new("https://api.avax.network/ext/bc/C/rpc"),
+        Endpoint::new("https://avalanche.llamarpc.com"),
+        Endpoint::new("https://avalanche-c-chain.publicnode.com"),
+        Endpoint::new("https://rpc.ankr.com/avalanche"),
+    ]);
+
+    map.insert("LINEA".to_string(), vec![
+        Endpoint::new("https://rpc.linea.build"),
+        Endpoint::new("https://linea.llamarpc.com"),
+        Endpoint::new("https://linea.publicnode.com"),
+        Endpoint::new("https://rpc.ankr.com/linea"),
+    ]);
+
+    map.insert("ZKSYNC".to_string(), vec![
+        Endpoint::new("https://mainnet.era.zksync.io"),
+        Endpoint::new("https://zksync.llamarpc.com"),
+        Endpoint::new("https://zksync.publicnode.com"),
+    ]);
+
+    map.insert("SCROLL".to_string(), vec![
+        Endpoint::new("https://rpc.scroll.io"),
+        Endpoint::new("https://scroll.publicnode.com"),
+        Endpoint::new("https://rpc.ankr.com/scroll"),
+    ]);
+
+    // ── Non-EVM ───────────────────────────────────────────────────────────────
     map.insert("SOL".to_string(), vec![
         Endpoint::new("https://api.mainnet-beta.solana.com"),
         Endpoint::new("https://solana.publicnode.com"),
@@ -64,6 +150,14 @@ fn build_default_endpoints() -> HashMap<String, Vec<Endpoint>> {
     ]);
 
     map
+}
+
+/// Returns all registered chain IDs.
+pub fn list_chains() -> Vec<String> {
+    let map = ENDPOINTS.read().unwrap_or_else(|p| p.into_inner());
+    let mut chains: Vec<String> = map.keys().cloned().collect();
+    chains.sort();
+    chains
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

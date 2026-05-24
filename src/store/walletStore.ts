@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import type { AccountMeta, TokenBalance } from "../types";
+import type { AccountMeta, TokenBalance, NetworkConfig } from "../types";
+import { BUILTIN_NETWORKS } from "./networkStore";
 
 interface WalletState {
   accounts: AccountMeta[];

@@ -13,6 +13,28 @@ export interface AccountMeta {
   index?: number;
 }
 
+// ── Network / Chain config ────────────────────────────────────────────────────
+
+/** Full EVM-compatible network configuration (L1 / L2 / custom). */
+export interface NetworkConfig {
+  /** Short identifier used as the chain key, e.g. "ETH", "BASE", "ARB". */
+  id: string;
+  /** EIP-155 chain ID, e.g. 1, 8453, 42161. */
+  chainId: number;
+  /** Human-readable display name. */
+  name: string;
+  /** JSON-RPC endpoint URLs (first = preferred). */
+  rpcUrls: string[];
+  /** Native currency symbol, e.g. "ETH", "BNB", "MATIC". */
+  symbol: string;
+  /** Block-explorer base URL for tx/address links. */
+  explorerUrl?: string;
+  /** Explorer API base URL (for history / token lookups). */
+  explorerApiUrl?: string;
+  /** True when user-defined (not a built-in preset). */
+  isCustom?: boolean;
+}
+
 export interface HashOut {
   hash: string;
 }

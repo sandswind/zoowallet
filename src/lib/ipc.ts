@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountMeta, TokenBalance, GasOptions, EthTxPreview,
-  TxRecord, TokenInfo, HashOut,
+  TxRecord, TokenInfo, HashOut, NetworkConfig,
 } from "../types";
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -107,5 +107,26 @@ export const zoo = {
       safeInvoke<Record<string, PriceData>>("price_get_multiple", { symbols }),
     getChart: (symbol: string) =>
       safeInvoke<[number, number][]>("price_get_chart", { symbol }),
+  },
+
+  // Network management — dynamic EVM L2 registration
+  network: {
+    /** List all available networks (builtins + custom). */
+    list: () => safeInvoke<NetworkConfig[]>("list_networks"),
+
+    /** Get the currently active network. */
+    getActive: () => safeInvoke<NetworkConfig>("get_active_network"),
+
+    /** Switch the active network by ID (e.g. "BASE", "ARB"). */
+    setActive: (chainId: string) =>
+      safeInvoke<NetworkConfig>("set_active_network", { chain_id: chainId }),
+
+    /** Register or update a custom EVM-compatible network. */
+    register: (config: NetworkConfig) =>
+      safeInvoke<NetworkConfig>("register_network", { config }),
+
+    /** Remove a user-defined custom network (built-ins cannot be removed). */
+    remove: (chainId: string) =>
+      safeInvoke<void>("remove_network", { chain_id: chainId }),
   },
 } as const;
